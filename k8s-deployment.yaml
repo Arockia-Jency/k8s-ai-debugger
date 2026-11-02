@@ -1,0 +1,36 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ai-debugger
+  namespace: ai-debug-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-ai-debugger
+  template:
+    metadata:
+      labels:
+        app: k8s-ai-debugger
+    spec:
+      containers:
+        - name: app
+          image: k8s-ai-debugger:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5

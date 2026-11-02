@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-demo
+  template:
+    metadata:
+      labels:
+        app: oom-demo
+    spec:
+      containers:
+        - name: oom-demo
+          image: busybox:1.36
+          command: ["sh", "-c", "echo 'Simulating out-of-memory'; tail /dev/zero"]
+          resources:
+            limits:
+              memory: "10Mi"
