@@ -1,5 +1,6 @@
 
 import * as k8s from "@kubernetes/client-node";
+import { redactSensitive, redactText } from "./security/redact";
 
 const namespace = process.env.K8S_NAMESPACE || "ai-debug-lab";
 
@@ -8,22 +9,6 @@ kc.loadFromDefault();
 
 const coreApi = kc.makeApiClient(k8s.CoreV1Api);
 const appsApi = kc.makeApiClient(k8s.AppsV1Api);
-
-function redact(value: string): string {
-  return value
-    .replace(
-      /("(?:password|token|secret|api[_-]?key)"\s*:\s*")[^"]*"/gi,
-      '$1[REDACTED]"',
-    )
-    .replace(
-      /\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi,
-      "$1[REDACTED]",
-    )
-    .replace(
-      /\b(password|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi,
-      "$1=[REDACTED]",
-    );
-}
 
 async function main() {
   console.log(`Collecting live evidence from namespace: ${namespace}\n`);
@@ -77,7 +62,7 @@ async function main() {
               });
 
               const body = String(result);
-              return `Container ${container.name}:\n${redact(body)}`;
+              return `Container ${container.name}:\n${redactText(body)}`;
             } catch {
               return `Container ${container.name}: current logs unavailable`;
             }
@@ -100,7 +85,7 @@ async function main() {
                 tailLines: 40,
               });
 
-              return `Previous logs (${container.name}):\n${redact(String(result))}`;
+              return `Previous logs (${container.name}):\n${redactText(String(result))}`;
             } catch {
               return `Previous logs (${container.name}): unavailable`;
             }
@@ -138,7 +123,7 @@ async function main() {
     .map((event) => ({
       type: event.type,
       reason: event.reason,
-      message: redact(event.message ?? ""),
+      message: redactText(event.message ?? ""),
       involvedObject: event.involvedObject?.name,
       count: event.count,
     }));
@@ -151,7 +136,7 @@ async function main() {
     events,
   };
 
-  console.log(JSON.stringify(evidence, null, 2));
+  console.log(JSON.stringify(redactSensitive(evidence), null, 2));
 }
 
 main().catch((error: unknown) => {

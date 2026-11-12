@@ -72,6 +72,16 @@ chmod +x src/run-diagnose.sh
 ./src/run-diagnose.sh
 ```
 
+The runner does not create namespaces. Create the target namespace separately if needed. If the Kubernetes API cannot be reached, the basic check may fail, but the live step continues and attempts to send a failure alert to Teams.
+
+Ask a question about the collected evidence with `--ask`:
+
+```bash
+./src/run-diagnose.sh --ask "Why is imagepull-demo unable to start?"
+```
+
+The AI can explain the evidence, but it cannot execute commands from the prompt.
+
 ---
 
 ## Phase 1: Verify setup with demo scenarios
@@ -101,17 +111,41 @@ Expected: AI detects OOMKilled termination reason, recommends increasing memory 
 ### Scenario 3 — ImagePullBackOff (wrong image)
 
 ```bash
-kubectl apply -f scenarios/3-image-pull-error.yaml -n ${K8S_NAMESPACE:-ai-debug-lab}
-sleep 15
-cd k8s-debugger-cli && ./src/run-diagnose.sh
+cd k8s-debugger-cli
+NS="${K8S_NAMESPACE:-ai-debug-lab}"
+kubectl delete -f ../scenarios/1-crash-loop.yaml -n "$NS" --ignore-not-found
+kubectl apply -f ../scenarios/3-image-pull-error.yaml -n "$NS"
+kubectl get pods -n "$NS" -w
+# Once imagepull-demo shows ImagePullBackOff, press Ctrl+C and run:
+./src/run-diagnose.sh
 ```
 
-Expected: AI detects ImagePullBackOff, recommends verifying the image tag.
+Expected: AI detects ImagePullBackOff and reports the requested image as unavailable.
+
+To preview a replacement image without applying it, choose a valid image reference and run:
+
+```bash
+K8S_PREVIEW_DEPLOYMENT=imagepull-demo \
+K8S_PREVIEW_CONTAINER=imagepull-demo \
+K8S_PREVIEW_IMAGE="nginx:YOUR_KNOWN_GOOD_TAG" \
+./src/run-diagnose.sh
+```
+
+The preview shows the current and proposed image and asks Kubernetes to validate the change with a server-side dry run. It never applies the image. Server-side validation requires permission to patch the Deployment, even though dry-run does not persist the change.
+
+To request an approved update, add `--approve-image`. After the dry run succeeds, the CLI asks you to type the exact namespace, Deployment, container, and image confirmation; only that confirmation applies the selected image and checks rollout status. It requires an interactive terminal and Deployment patch permission.
+
+```bash
+K8S_PREVIEW_DEPLOYMENT=imagepull-demo \
+K8S_PREVIEW_CONTAINER=imagepull-demo \
+K8S_PREVIEW_IMAGE="nginx:YOUR_KNOWN_GOOD_TAG" \
+./src/run-diagnose.sh --approve-image
+```
 
 ### Clean up demo scenarios
 
 ```bash
-kubectl delete -f scenarios/ -n ${K8S_NAMESPACE:-ai-debug-lab}
+kubectl delete -f ../scenarios/ -n ${K8S_NAMESPACE:-ai-debug-lab}
 ```
 
 ---
@@ -173,28 +207,31 @@ K8s Cluster                    CLI                         AI + Teams
 |---|---|---|
 | `src/index.ts` | Basic pod health check | No |
 | `src/collect-evidence.ts` | Gather full cluster evidence | No |
-| `src/diagnose-live.ts` | Full pipeline: collect + AI diagnosis + Teams alert | Yes |
+| `src/diagnose-live.ts` | Collect + optional AI diagnosis + Teams alert/action preview | When diagnosing or asking a question |
 | `src/ai-test.ts` | Test AI API connectivity with fake data | Yes |
 | `src/run-diagnose.sh` | One-command runner with pre-flight checks | Yes |
 
 ### What gets sent to the AI
 
-Only filtered, redacted evidence:
-- Pod names, phases, container states
+Only filtered evidence with some redactions:
+- Pod phases and container states; resource names are replaced with aliases
 - Restart counts and exit codes
-- Last 40 lines of logs (trimmed to 2500 chars), secrets stripped
+- Last 40 lines of problematic pod logs (trimmed to 2500 chars), with common secret patterns and fully qualified class names masked
 - Warning events from the last hour
 - Deployment replica counts
 
-What is NOT sent: full cluster config, secrets, service account tokens, internal IPs.
+The collector does not read Kubernetes Secret objects, kubeconfig contents, or service account tokens. Log and event text is still sent after pattern-based redaction; unusual secrets or internal IPs in application text may not be caught. Treat it as sensitive data and use a test namespace first.
 
 ### Environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GROQ_API_KEY` | Yes | — | API key from https://console.groq.com |
+| `GROQ_API_KEY` | Required for AI diagnosis | — | API key from https://console.groq.com |
 | `K8S_NAMESPACE` | No | `ai-debug-lab` | Kubernetes namespace to scan |
 | `TEAMS_WEBHOOK_URL` | No | — | Teams webhook URL for notifications |
+| `K8S_PREVIEW_DEPLOYMENT` | No | — | Deployment name for an image update preview; set with the next two variables |
+| `K8S_PREVIEW_CONTAINER` | No | — | Container name to preview |
+| `K8S_PREVIEW_IMAGE` | No | — | Proposed image reference; applied only with `--approve-image` and typed confirmation |
 
 ---
 
