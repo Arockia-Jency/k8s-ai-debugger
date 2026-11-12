@@ -1,8 +1,5 @@
 
-import { execFileSync } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { redactSensitive, redactText } from "./security/redact";
 
 const apiKey = process.env.GROQ_API_KEY;
 
@@ -24,27 +21,37 @@ const evidence = {
   ],
 };
 
-function callAiApi(body: object): string {
-  const tmpFile = join(tmpdir(), `k8s-debugger-${Date.now()}.json`);
-  writeFileSync(tmpFile, JSON.stringify(body));
-  try {
-    return execFileSync("curl", [
-      "-s", "--max-time", "120",
-      "https://api.groq.com/openai/v1/chat/completions",
-      "-X", "POST",
-      "-H", "Content-Type: application/json",
-      "-H", `Authorization: Bearer ${apiKey}`,
-      "-d", `@${tmpFile}`,
-    ], { encoding: "utf8", maxBuffer: 5 * 1024 * 1024 });
-  } finally {
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+async function callAiApi(body: object): Promise<unknown> {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(redactSensitive(body)),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const body = await response.json() as { error?: { message?: unknown } };
+      if (typeof body.error?.message === "string") {
+        detail = `: ${redactText(body.error.message).slice(0, 500)}`;
+      }
+    } catch {
+      // Keep the HTTP status if the provider did not return a JSON error.
+    }
+    throw new Error(`Groq API request failed (HTTP ${response.status})${detail}.`);
   }
+
+  return response.json() as Promise<unknown>;
 }
 
-function main() {
+async function main() {
   console.log("Sending Kubernetes evidence to the AI model...\n");
 
-  const raw = callAiApi({
+  const result = await callAiApi({
     model: "openai/gpt-oss-120b",
     messages: [
       {
@@ -68,21 +75,17 @@ Do not recommend destructive actions.`,
       },
     ],
     temperature: 0.2,
-    max_tokens: 1200,
+    max_completion_tokens: 1200,
     stream: false,
-  });
-
-  const result = JSON.parse(raw) as {
+  }) as {
     choices?: { message?: { content?: string } }[];
   };
 
   console.log("AI DIAGNOSIS\n");
-  console.log(result.choices?.[0]?.message?.content ?? "No response text.");
+  console.log(redactText(result.choices?.[0]?.message?.content ?? "No response text."));
 }
 
-try {
-  main();
-} catch (error: unknown) {
+main().catch((error: unknown) => {
   console.error("AI diagnostic failed:", error);
   process.exitCode = 1;
-}
+});
